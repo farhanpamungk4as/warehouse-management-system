@@ -1,0 +1,1474 @@
+openapi: 3.0.3
+info:
+  title: Warehouse Management API
+  version: 1.0.0
+  description: 'Seven mandatory Item/Stock operations plus dashboard, inventory, transfer and location CRUD operations.
+    Receive and transfer are not idempotent: reconcile balances before any manual
+    retry after an uncertain result. All responses use JSON envelopes and X-Request-ID.
+    No authentication: publish only behind appropriate demo access controls.'
+servers:
+- url: http://localhost:18080/api/v1
+  description: Local Docker Compose backend
+tags:
+- name: Items
+- name: Stock
+- name: Dashboard
+  description: 'Enterprise bonus: live read-only metrics'
+- name: Inventory
+  description: 'Enterprise bonus: paginated stock overview'
+- name: Locations
+  description: 'Location CRUD with optional short TTL list cache'
+paths:
+  /items:
+    post:
+      tags:
+      - Items
+      operationId: createItem
+      summary: Create an item
+      description: Creates master data without stock. SKU uniqueness is global and
+        case-sensitive, including soft-deleted items. No query parameters are accepted.
+        Concurrent duplicate requests produce one 201 and one 409. A failed or timed-out
+        response does not prove the write did not commit.
+      requestBody:
+        $ref: '#/components/requestBodies/ItemWrite'
+      responses:
+        '201':
+          description: Item created
+          headers:
+            Location:
+              description: Relative URL of the created item
+              schema:
+                type: string
+                example: /api/v1/items/1
+            X-Request-ID:
+              $ref: '#/components/headers/RequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ItemSuccess'
+              example:
+                success: true
+                message: Item created successfully
+                data:
+                  id: 1
+                  sku: WH-001
+                  name: Storage Box
+                  category: Packaging
+                  unit: pcs
+                  created_at: '2026-10-15T00:00:00Z'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          $ref: '#/components/responses/DuplicateSKU'
+        '413':
+          $ref: '#/components/responses/BodyTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMedia'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    get:
+      tags:
+      - Items
+      operationId: listItems
+      summary: List active items
+      description: 'Stable id ASC ordering. Category AND (SKU OR name search) applies
+        to the entire active dataset before counting and pagination. Search treats
+        %, _ and backslash literally. Rows, filtered total and category options share
+        one short read-only REPEATABLE READ transaction. Categories are sorted distinct
+        values from all active items, independent of filters and page. Unknown or
+        duplicate query keys, malformed encodings, invalid numbers, and offsets above
+        2147483647 return 400. Empty results and out-of-range pages return 200 with
+        data: [] and accurate metadata. Separate requests may observe changes to offset
+        pages.'
+      parameters:
+      - &id001
+        name: page
+        in: query
+        description: Positive decimal integer; (page - 1) * limit must not exceed
+          2147483647.
+        schema:
+          type: integer
+          format: int64
+          minimum: 1
+          maximum: 2147483648
+          default: 1
+      - &id002
+        name: limit
+        in: query
+        description: Page size, never silently clamped.
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 10
+      - &id003
+        name: category
+        in: query
+        description: Exact case-sensitive category; surrounding ASCII spaces trimmed;
+          empty means all.
+        schema:
+          type: string
+          maxLength: 64
+      - &id004
+        name: q
+        in: query
+        description: Case-insensitive literal substring of SKU or name; surrounding
+          ASCII spaces trimmed; empty disables search.
+        schema:
+          type: string
+          maxLength: 200
+      responses:
+        '200':
+          description: Items retrieved successfully
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/RequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ItemListSuccess'
+              example:
+                success: true
+                message: Items retrieved successfully
+                data: []
+                meta:
+                  page: 1
+                  limit: 10
+                  total: 0
+                  categories: []
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /items/{id}:
+    parameters:
+    - $ref: '#/components/parameters/ItemID'
+    get:
+      tags:
+      - Items
+      operationId: getItem
+      summary: Get an active item
+      description: Missing and soft-deleted items return 404. No query parameters
+        are accepted.
+      responses:
+        '200':
+          description: Item retrieved successfully
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/RequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ItemSuccess'
+              example:
+                success: true
+                message: Item retrieved successfully
+                data:
+                  id: 1
+                  sku: WH-001
+                  name: Storage Box
+                  category: Packaging
+                  unit: pcs
+                  created_at: '2026-10-15T00:00:00Z'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/ItemNotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    put:
+      tags:
+      - Items
+      operationId: updateItem
+      summary: Replace all editable fields of an active item
+      description: All four fields are required. Preserves id and created_at; never
+        upserts or reactivates deleted items. Keeping the same SKU succeeds; another
+        item's SKU, including a deleted item's, returns 409. Renaming an active SKU
+        releases its previous value. Concurrent edits use last committed write wins.
+        No query parameters are accepted.
+      requestBody:
+        $ref: '#/components/requestBodies/ItemWrite'
+      responses:
+        '200':
+          description: Item updated successfully
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/RequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ItemSuccess'
+              example:
+                success: true
+                message: Item updated successfully
+                data:
+                  id: 1
+                  sku: WH-001
+                  name: Large Storage Box
+                  category: Packaging
+                  unit: pcs
+                  created_at: '2026-10-15T00:00:00Z'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/ItemNotFound'
+        '409':
+          $ref: '#/components/responses/DuplicateSKU'
+        '413':
+          $ref: '#/components/responses/BodyTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMedia'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    delete:
+      tags:
+      - Items
+      operationId: deleteItem
+      summary: Soft-delete an active item
+      description: Atomic active-row update sets deleted_at. Retains the physical
+        item, globally reserved SKU and all existing stock unchanged. Deleted items
+        are excluded from list, detail and updates. A repeated DELETE returns 404.
+        No request body or query parameters are required. No hard delete or undelete
+        operation is provided.
+      responses:
+        '200':
+          description: Item deleted successfully
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/RequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeleteSuccess'
+              example:
+                success: true
+                message: Item deleted successfully
+                data:
+                  id: 1
+                  deleted_at: '2026-10-15T01:00:00Z'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/ItemNotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /stock/receive:
+    post:
+      tags:
+      - Stock
+      operationId: receiveStock
+      summary: Receive positive stock into an existing location
+      description: 'Adds qty to the latest balance using an atomic guarded PostgreSQL
+        upsert. Concurrent inserts retain one item/location pair; concurrent increments
+        do not lose receipts. Cumulative qty cannot exceed 2147483647 (409). One READ
+        COMMITTED transaction locks the active Item FOR SHARE, locks the Location
+        FOR KEY SHARE, increments stock, then commits in that order. All capabilities
+        use the exact same transaction/connection. A confirmed delete before the Item
+        lock makes receiving return 404; a receive that locked first commits before
+        deletion can finish. Each acknowledged commit emits one stock.receive.committed
+        log. This operation is NOT idempotent: identical successful POST requests
+        add twice. Never retry automatically after a timeout or uncertain failure;
+        reconcile the balance first. A lost COMMIT acknowledgement returns an explicit
+        unknown-outcome 500 and logs stock.receive.commit_unknown; stock may already
+        have committed. No query parameters are accepted. Missing Item takes precedence
+        over missing Location. Receiving never creates items or locations.'
+      requestBody:
+        $ref: '#/components/requestBodies/StockReceive'
+      responses:
+        '200':
+          description: Stock received and COMMIT acknowledged
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/RequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StockReceiveSuccess'
+              example:
+                success: true
+                message: Stock received successfully
+                data:
+                  id: 3
+                  item_id: 1
+                  location_id: 2
+                  qty: 15
+                  updated_at: '2026-10-15T08:00:00Z'
+        '400':
+          description: Invalid JSON, IDs, quantity or query parameters; no receive
+            is started.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/RequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                success: false
+                message: Validation failed
+                errors:
+                - field: qty
+                  reason: Must be a positive integer
+        '404':
+          $ref: '#/components/responses/StockReferenceNotFound'
+        '409':
+          $ref: '#/components/responses/StockCapacityExceeded'
+        '413':
+          $ref: '#/components/responses/BodyTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMedia'
+        '500':
+          $ref: '#/components/responses/StockReceiveError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /stock/{item_id}:
+    get:
+      tags:
+      - Stock
+      operationId: getStock
+      summary: Get all existing location balances of an active item
+      description: 'One active-item LEFT JOIN stocks LEFT JOIN locations statement
+        returns a consistent snapshot ordered by location_id ASC. Missing/deleted
+        items return 404 even when retained stock rows exist. An active item without
+        stock returns stocks: []. Only actual rows are returned, including existing
+        zero balances; no artificial zero rows or total property are generated. No
+        body or query parameters are required.'
+      parameters:
+      - name: item_id
+        in: path
+        required: true
+        description: Positive base-10 32-bit integer; malformed, zero, negative and
+          overflowing IDs return 400.
+        schema:
+          type: integer
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+      responses:
+        '200':
+          description: All existing location balances; an active item may have an
+            empty stocks array.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/RequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StockLookupSuccess'
+              examples:
+                locations:
+                  value:
+                    success: true
+                    message: Stock retrieved successfully
+                    data:
+                      item_id: 1
+                      stocks:
+                      - id: 3
+                        item_id: 1
+                        location_id: 2
+                        qty: 15
+                        updated_at: '2026-10-15T08:00:00Z'
+                        location:
+                          id: 2
+                          code: RACK-B1
+                          zone: B
+                          type: rack
+                empty:
+                  value:
+                    success: true
+                    message: Stock retrieved successfully
+                    data:
+                      item_id: 1
+                      stocks: []
+        '400':
+          description: Invalid item_id or unsupported query parameters.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/RequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                success: false
+                message: Validation failed
+                errors:
+                - field: item_id
+                  reason: Must be a positive 32-bit integer
+        '404':
+          $ref: '#/components/responses/StockItemNotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /dashboard/summary:
+    get:
+      tags:
+      - Dashboard
+      operationId: getDashboardSummary
+      summary: Get current warehouse summary
+      description: Active items only. Available quantity sums balances; occupied pairs
+        have qty > 0. Distribution includes empty locations with zero. One PostgreSQL
+        MVCC statement; never Redis cached. No query parameters.
+      x-requirement: enterprise-bonus
+      responses:
+        '200':
+          description: Successful result
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/RequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DashboardSuccess'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /locations:
+    post:
+      tags: [Locations]
+      operationId: createLocation
+      summary: Create a warehouse location
+      description: Code is unique and case-sensitive. No query parameters. Successful writes invalidate the location list cache.
+      requestBody:
+        $ref: '#/components/requestBodies/LocationWrite'
+      responses:
+        '201':
+          description: Location created
+          headers:
+            Location:
+              schema: {type: string}
+              description: Relative URL of the created location
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LocationSuccess'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          $ref: '#/components/responses/LocationConflict'
+        '413':
+          $ref: '#/components/responses/BodyTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMedia'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    get:
+      tags:
+      - Locations
+      operationId: listLocations
+      summary: List warehouse locations
+      description: All actual locations ordered by code, id; empty result is []. No
+        query parameters. Optional Redis read-through warehouse:v1:locations, TTL
+        30s default; unavailable cache falls back to PostgreSQL. No stock summaries
+        are cached. Create, update and delete invalidate the cache. Cache invalidation
+        failures do not fail committed writes; this backend bypasses the old key for its TTL.
+      x-requirement: enterprise-bonus
+      responses:
+        '200':
+          description: Successful result
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/RequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LocationsSuccess'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /locations/{id}:
+    parameters:
+    - name: id
+      in: path
+      required: true
+      schema: {type: integer, format: int32, minimum: 1, maximum: 2147483647}
+      description: Positive base-10 integer. Query parameters are not supported.
+    get:
+      tags: [Locations]
+      operationId: getLocation
+      summary: Get a warehouse location
+      responses:
+        '200':
+          description: Location retrieved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LocationSuccess'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/LocationNotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    put:
+      tags: [Locations]
+      operationId: updateLocation
+      summary: Replace a warehouse location's code, zone and type
+      description: All three fields required. Existing stock references keep the same location ID.
+      requestBody:
+        $ref: '#/components/requestBodies/LocationWrite'
+      responses:
+        '200':
+          description: Location updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LocationSuccess'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/LocationNotFound'
+        '409':
+          $ref: '#/components/responses/LocationConflict'
+        '413':
+          $ref: '#/components/responses/BodyTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMedia'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    delete:
+      tags: [Locations]
+      operationId: deleteLocation
+      summary: Delete an unused warehouse location
+      description: Hard delete. Returns 409 if any stock record references this location, including zero balances and soft-deleted items. Foreign keys protect concurrent receive/transfer operations. Successful response contains the deleted location.
+      responses:
+        '200':
+          description: Location deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LocationSuccess'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/LocationNotFound'
+        '409':
+          $ref: '#/components/responses/LocationConflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /inventory/overview:
+    get:
+      tags:
+      - Inventory
+      operationId: getInventoryOverview
+      summary: Get paginated stock overview
+      description: Active items only, including stored zero balances. Stable item
+        ID/location ID ordering. Count, rows and global active categories share a
+        read-only REPEATABLE READ transaction. Search treats SQL wildcard characters
+        literally. No N+1 fetches. Unknown/duplicate query parameters rejected. Out-of-range
+        page returns [].
+      x-requirement: enterprise-bonus
+      responses:
+        '200':
+          description: Successful result
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/RequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InventorySuccess'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+      parameters:
+      - *id001
+      - *id002
+      - *id003
+      - *id004
+      - in: query
+        name: location_id
+        schema: &id005
+          type: integer
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+        description: Optional existing location ID; unmatched IDs return an empty
+          page.
+  /stock/transfer:
+    post:
+      tags:
+      - Stock
+      operationId: transferStock
+      summary: Transfer stock atomically (bonus)
+      description: 'Single PostgreSQL transaction: lock active item FOR SHARE, lock
+        both locations FOR UPDATE in ascending ID order, conditional source decrement
+        then bounded destination upsert. Serializes all transfers sharing a location
+        (even for different items); receive KEY SHARE is compatible with this lock
+        order. Missing/deleted item or missing location: 404; insufficient source
+        or destination capacity: 409. Known failures roll back both balances. Confirmed
+        balances returned only after COMMIT acknowledgement; postcommit event stock.transfer.committed.
+        Lost acknowledgement may mean committed: 500 outcome unknown and stock.transfer.commit_unknown
+        event. Never automatically retry. No query parameters.'
+      x-requirement: enterprise-bonus
+      responses:
+        '200':
+          description: Successful result
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/RequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StockTransferSuccess'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          description: Technical failure or commit outcome unknown; reconcile before
+            retry
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                success: false
+                message: Stock transfer outcome unknown
+                errors:
+                - field: request
+                  reason: Reconcile stock before retrying; the transfer may have committed
+        '503':
+          $ref: '#/components/responses/Unavailable'
+        '404':
+          $ref: '#/components/responses/StockReferenceNotFound'
+        '409':
+          description: Insufficient source stock or destination capacity exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                insufficient:
+                  value:
+                    success: false
+                    message: Insufficient source stock
+                    errors:
+                    - field: qty
+                      reason: Source balance is less than requested quantity
+                capacity:
+                  value:
+                    success: false
+                    message: Stock quantity limit exceeded
+                    errors:
+                    - field: qty
+                      reason: Cumulative quantity exceeds the storage limit
+        '413':
+          $ref: '#/components/responses/BodyTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMedia'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StockTransferInput'
+            example:
+              item_id: 1
+              from_location_id: 1
+              to_location_id: 2
+              qty: 5
+components:
+  headers:
+    RequestID:
+      description: Correlation ID; valid supplied X-Request-ID is echoed, otherwise
+        one is generated.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 64
+  parameters:
+    ItemID:
+      name: id
+      in: path
+      required: true
+      description: Positive base-10 32-bit integer; signs, decimals, zero and overflow
+        are rejected.
+      schema:
+        type: integer
+        format: int32
+        minimum: 1
+        maximum: 2147483647
+  requestBodies:
+    LocationWrite:
+      required: true
+      description: Exactly one JSON object with code, zone and type non-null strings. Unknown/duplicate keys and trailing JSON rejected. ASCII spaces trimmed; nonblank Unicode text without ASCII controls. Length limits count Unicode characters. Maximum request size 64 KiB.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/LocationWrite'
+          example: {code: RACK-C1, zone: C, type: rack}
+    ItemWrite:
+      required: true
+      description: Exactly one JSON object, at most 64 KiB, with all four non-null
+        strings. Unknown, duplicate or incorrectly cased keys, client IDs/timestamps,
+        malformed JSON, wrong types and trailing documents are rejected.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ItemWrite'
+          example:
+            sku: WH-001
+            name: Storage Box
+            category: Packaging
+            unit: pcs
+    StockReceive:
+      required: true
+      description: Exactly one JSON object, at most 64 KiB; unknown/duplicate or incorrectly
+        cased fields and trailing JSON are rejected.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/StockReceiveInput'
+          example:
+            item_id: 1
+            location_id: 2
+            qty: 5
+  schemas:
+    LocationWrite:
+      type: object
+      additionalProperties: false
+      required: [code, zone, type]
+      properties:
+        code: {type: string, minLength: 1, maxLength: 64}
+        zone: {type: string, minLength: 1, maxLength: 64}
+        type: {type: string, minLength: 1, maxLength: 32}
+    LocationSuccess:
+      type: object
+      required: [success, message, data]
+      properties:
+        success: {type: boolean, enum: [true]}
+        message: {type: string}
+        data:
+          $ref: '#/components/schemas/Location'
+    ItemWrite:
+      type: object
+      additionalProperties: false
+      required:
+      - sku
+      - name
+      - category
+      - unit
+      description: Surrounding U+0020 ASCII spaces are trimmed. Strings must be nonblank,
+        valid UTF-8, not Unicode whitespace-only, and contain no ASCII controls U+0000-U+001F
+        or U+007F. Length bounds count Unicode characters after trimming. No Unicode
+        normalization or SKU uppercasing is performed.
+      properties:
+        sku:
+          type: string
+          minLength: 1
+          maxLength: 64
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+        category:
+          type: string
+          minLength: 1
+          maxLength: 64
+        unit:
+          type: string
+          minLength: 1
+          maxLength: 32
+    Item:
+      type: object
+      additionalProperties: false
+      required:
+      - id
+      - sku
+      - name
+      - category
+      - unit
+      - created_at
+      properties:
+        id:
+          type: integer
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+          readOnly: true
+        sku:
+          type: string
+          minLength: 1
+          maxLength: 64
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+        category:
+          type: string
+          minLength: 1
+          maxLength: 64
+        unit:
+          type: string
+          minLength: 1
+          maxLength: 32
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+    ItemSuccess:
+      type: object
+      required:
+      - success
+      - message
+      - data
+      properties:
+        success:
+          type: boolean
+          enum:
+          - true
+        message:
+          type: string
+          example: Item retrieved successfully
+        data:
+          $ref: '#/components/schemas/Item'
+    ItemListSuccess:
+      type: object
+      required:
+      - success
+      - message
+      - data
+      - meta
+      properties:
+        success:
+          type: boolean
+          enum:
+          - true
+        message:
+          type: string
+          enum:
+          - Items retrieved successfully
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Item'
+        meta:
+          $ref: '#/components/schemas/ItemListMeta'
+    ItemListMeta:
+      type: object
+      required:
+      - page
+      - limit
+      - total
+      - categories
+      properties:
+        page:
+          type: integer
+          format: int64
+          minimum: 1
+          maximum: 2147483648
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 100
+        total:
+          type: integer
+          format: int64
+          minimum: 0
+          description: All matching active items before pagination
+        categories:
+          type: array
+          uniqueItems: true
+          description: Sorted distinct categories of all active items, independent
+            of current filters and page; never null.
+          items:
+            type: string
+            minLength: 1
+            maxLength: 64
+    DeleteSuccess:
+      type: object
+      required:
+      - success
+      - message
+      - data
+      properties:
+        success:
+          type: boolean
+          enum:
+          - true
+        message:
+          type: string
+          enum:
+          - Item deleted successfully
+        data:
+          type: object
+          required:
+          - id
+          - deleted_at
+          properties:
+            id:
+              type: integer
+              format: int32
+              minimum: 1
+              maximum: 2147483647
+            deleted_at:
+              type: string
+              format: date-time
+    StockReceiveInput:
+      type: object
+      additionalProperties: false
+      required:
+      - item_id
+      - location_id
+      - qty
+      description: Strict integer JSON fields (no nulls, strings, decimals or exponent
+        notation). IDs reference existing active Item and existing Location. qty is
+        a positive received delta, never a replacement balance.
+      properties:
+        item_id:
+          type: integer
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+        location_id:
+          type: integer
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+        qty:
+          type: integer
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+    Stock:
+      type: object
+      required:
+      - id
+      - item_id
+      - location_id
+      - qty
+      - updated_at
+      properties:
+        id:
+          type: integer
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+          readOnly: true
+        item_id:
+          type: integer
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+        location_id:
+          type: integer
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+        qty:
+          type: integer
+          format: int32
+          minimum: 0
+          maximum: 2147483647
+          description: Resulting stored balance
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+          description: Database statement time rendered as UTC RFC3339
+    Location:
+      type: object
+      required:
+      - id
+      - code
+      - zone
+      - type
+      properties:
+        id:
+          type: integer
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+        code:
+          type: string
+          minLength: 1
+          maxLength: 64
+        zone:
+          type: string
+          minLength: 1
+          maxLength: 64
+        type:
+          type: string
+          minLength: 1
+          maxLength: 32
+    StockAtLocation:
+      allOf:
+      - $ref: '#/components/schemas/Stock'
+      - type: object
+        required:
+        - location
+        properties:
+          location:
+            $ref: '#/components/schemas/Location'
+    StockReceiveSuccess:
+      type: object
+      required:
+      - success
+      - message
+      - data
+      properties:
+        success:
+          type: boolean
+          enum:
+          - true
+        message:
+          type: string
+          enum:
+          - Stock received successfully
+        data:
+          $ref: '#/components/schemas/Stock'
+    StockLookupSuccess:
+      type: object
+      required:
+      - success
+      - message
+      - data
+      properties:
+        success:
+          type: boolean
+          enum:
+          - true
+        message:
+          type: string
+          enum:
+          - Stock retrieved successfully
+        data:
+          type: object
+          required:
+          - item_id
+          - stocks
+          properties:
+            item_id:
+              type: integer
+              format: int32
+              minimum: 1
+              maximum: 2147483647
+            stocks:
+              type: array
+              description: Actual balances ordered by location_id; never null.
+              items:
+                $ref: '#/components/schemas/StockAtLocation'
+    Error:
+      type: object
+      required:
+      - success
+      - message
+      - errors
+      properties:
+        success:
+          type: boolean
+          enum:
+          - false
+        message:
+          type: string
+        errors:
+          type: array
+          items:
+            type: object
+            required:
+            - field
+            - reason
+            properties:
+              field:
+                type: string
+                description: Field name or request for general errors
+              reason:
+                type: string
+    StockTransferInput:
+      type: object
+      required:
+      - item_id
+      - from_location_id
+      - to_location_id
+      - qty
+      properties:
+        item_id:
+          type: integer
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+        from_location_id:
+          type: integer
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+        to_location_id:
+          type: integer
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+        qty:
+          type: integer
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+      additionalProperties: false
+      description: Strict integer JSON fields; distinct source/destination. Quantity
+        is moved, never replaced.
+    StockTransfer:
+      type: object
+      required:
+      - item_id
+      - from_location_id
+      - to_location_id
+      - qty
+      - source
+      - destination
+      properties:
+        item_id: *id005
+        from_location_id: *id005
+        to_location_id: *id005
+        qty: *id005
+        source:
+          $ref: '#/components/schemas/Stock'
+        destination:
+          $ref: '#/components/schemas/Stock'
+    DashboardSummary:
+      type: object
+      required:
+      - active_items
+      - available_quantity
+      - locations
+      - occupied_stock_pairs
+      - distribution
+      properties:
+        active_items: &id006
+          type: integer
+          format: int64
+          minimum: 0
+          maximum: 9007199254740991
+        available_quantity: *id006
+        locations: *id006
+        occupied_stock_pairs: *id006
+        distribution:
+          type: array
+          items:
+            type: object
+            required:
+            - location_id
+            - code
+            - qty
+            properties:
+              location_id: *id005
+              code:
+                type: string
+              qty: *id006
+    InventoryRow:
+      type: object
+      required:
+      - id
+      - item
+      - location
+      - qty
+      - updated_at
+      properties:
+        id: *id005
+        item:
+          $ref: '#/components/schemas/Item'
+        location:
+          $ref: '#/components/schemas/Location'
+        qty:
+          type: integer
+          minimum: 0
+          maximum: 2147483647
+        updated_at:
+          type: string
+          format: date-time
+    StockTransferSuccess:
+      type: object
+      required:
+      - success
+      - message
+      - data
+      properties:
+        success:
+          type: boolean
+          enum:
+          - true
+        message:
+          type: string
+        data:
+          $ref: '#/components/schemas/StockTransfer'
+    DashboardSuccess:
+      type: object
+      required:
+      - success
+      - message
+      - data
+      properties:
+        success:
+          type: boolean
+          enum:
+          - true
+        message:
+          type: string
+        data:
+          $ref: '#/components/schemas/DashboardSummary'
+    LocationsSuccess:
+      type: object
+      required:
+      - success
+      - message
+      - data
+      properties:
+        success:
+          type: boolean
+          enum:
+          - true
+        message:
+          type: string
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Location'
+    InventorySuccess:
+      type: object
+      required:
+      - success
+      - message
+      - data
+      - meta
+      properties:
+        success:
+          type: boolean
+          enum:
+          - true
+        message:
+          type: string
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/InventoryRow'
+        meta:
+          $ref: '#/components/schemas/ItemListMeta'
+  responses:
+    LocationNotFound:
+      description: Location does not exist
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    LocationConflict:
+      description: Duplicate location code, or deletion blocked by existing stock records (including zero balances)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    StockReferenceNotFound:
+      description: Item is missing/deleted or destination Location is missing; no
+        mutation is committed.
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/RequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            item:
+              value:
+                success: false
+                message: Item not found
+                errors:
+                - field: item_id
+                  reason: Item does not exist
+            location:
+              value:
+                success: false
+                message: Location not found
+                errors:
+                - field: location_id
+                  reason: Location does not exist
+    StockItemNotFound:
+      description: Item is missing or soft-deleted; retained stock is not publicly
+        visible.
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/RequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            success: false
+            message: Item not found
+            errors:
+            - field: item_id
+              reason: Item does not exist
+    StockCapacityExceeded:
+      description: Atomic capacity guard rejected the increment; balance remains unchanged.
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/RequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            success: false
+            message: Stock quantity limit exceeded
+            errors:
+            - field: qty
+              reason: Cumulative quantity exceeds the storage limit
+    StockReceiveError:
+      description: Unexpected technical failure or explicitly unknown COMMIT outcome.
+        A lost acknowledgement cannot establish whether the receipt committed. Do
+        not retry automatically; reconcile stock first. No raw SQL is exposed.
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/RequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            internal:
+              value:
+                success: false
+                message: Internal server error
+                errors:
+                - field: request
+                  reason: An unexpected error occurred
+            commitUnknown:
+              value:
+                success: false
+                message: Stock receive outcome unknown
+                errors:
+                - field: request
+                  reason: Reconcile stock before retrying; the receipt may have committed
+    BadRequest:
+      description: Invalid JSON, path, query or fields; normal validation returns
+        400, never 422.
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/RequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            success: false
+            message: Validation failed
+            errors:
+            - field: sku
+              reason: Must not be blank
+    ItemNotFound:
+      description: Item does not exist or has been soft-deleted.
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/RequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            success: false
+            message: Item not found
+            errors:
+            - field: id
+              reason: Item does not exist
+    DuplicateSKU:
+      description: Global SKU conflict, including a soft-deleted item's SKU; existing
+        rows remain unchanged.
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/RequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            success: false
+            message: SKU already exists
+            errors:
+            - field: sku
+              reason: Duplicate entry
+    BodyTooLarge:
+      description: JSON body exceeds 64 KiB.
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/RequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            success: false
+            message: Request body too large
+            errors:
+            - field: request
+              reason: Request exceeds the body limit
+    UnsupportedMedia:
+      description: Write requests require application/json; charset parameters are
+        allowed.
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/RequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            success: false
+            message: Content type must be application/json
+            errors:
+            - field: request
+              reason: Unsupported content type
+    InternalError:
+      description: Unexpected technical failure; no database details are exposed.
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/RequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            success: false
+            message: Internal server error
+            errors:
+            - field: request
+              reason: An unexpected error occurred
+    Unavailable:
+      description: Known database unavailability or operation cancellation/deadline;
+        completion is not guaranteed.
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/RequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            success: false
+            message: Service temporarily unavailable
+            errors:
+            - field: request
+              reason: Operation could not be completed

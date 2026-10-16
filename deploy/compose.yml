@@ -1,0 +1,64 @@
+# Preparation only. Start only after deployment/access-control authorization.
+name: warehouse-demo
+services:
+  migrate:
+    build:
+      context: ../backend
+      target: migrate
+    environment:
+      GOOSE_DRIVER: postgres
+      GOOSE_DBSTRING: ${DATABASE_URL:?Managed PostgreSQL TLS URL required}
+    restart: "no"
+  backend:
+    build:
+      context: ../backend
+      target: runtime
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?Managed PostgreSQL TLS URL required}
+      HTTP_ADDR: ":8080"
+      GIN_MODE: release
+      LOG_LEVEL: info
+      REDIS_URL: ${REDIS_URL:-}
+      REDIS_TTL: 30s
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "api", "healthcheck"]
+      interval: 10s
+      timeout: 4s
+      retries: 5
+    restart: unless-stopped
+    stop_grace_period: 15s
+    security_opt: ["no-new-privileges:true"]
+  frontend:
+    build:
+      context: ../frontend
+      target: runtime
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+    security_opt: ["no-new-privileges:true"]
+  edge:
+    image: caddy:2-alpine@sha256:d8542f48d34a9cf4e4c11a478865229840e87e4c96ea3f439101f31a5d35f75f
+    environment:
+      DEMO_DOMAIN: ${DEMO_DOMAIN:?Domain required}
+      DEMO_USER: ${DEMO_USER:?Demo access username required}
+      DEMO_PASSWORD_HASH: ${DEMO_PASSWORD_HASH:?Hashed demo password required}
+    ports: ["80:80", "443:443"]
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on: [frontend]
+    restart: unless-stopped
+  redis:
+    profiles: [cache]
+    image: redis:7.4-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    restart: unless-stopped
+    security_opt: ["no-new-privileges:true"]
+volumes:
+  caddy_data:
+  caddy_config:

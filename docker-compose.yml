@@ -1,0 +1,92 @@
+name: warehouse-assessment
+
+services:
+  db:
+    image: postgres:17.11@sha256:67f41722b7a8cbdb868a44a4995c846eddfdc2973bccb291ce937dce88ad5675
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-warehouse}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-warehouse_local_only}
+      POSTGRES_DB: ${POSTGRES_DB:-warehouse}
+      TZ: UTC
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+
+  redis:
+    image: redis:7.4-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    security_opt:
+      - no-new-privileges:true
+
+  migrate:
+    build:
+      context: ./backend
+      target: migrate
+    environment:
+      GOOSE_DRIVER: postgres
+      PGHOST: db
+      PGPORT: "5432"
+      PGUSER: ${POSTGRES_USER:-warehouse}
+      PGPASSWORD: ${POSTGRES_PASSWORD:-warehouse_local_only}
+      PGDATABASE: ${POSTGRES_DB:-warehouse}
+      PGSSLMODE: disable
+      GOOSE_DBSTRING: "host=db port=5432 sslmode=disable connect_timeout=10"
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+
+  backend:
+    build:
+      context: ./backend
+      target: runtime
+    environment:
+      # libpq/pgx env fields avoid URL escaping bugs in passwords with reserved characters.
+      DATABASE_URL: "host=db port=5432 sslmode=disable connect_timeout=10"
+      PGUSER: ${POSTGRES_USER:-warehouse}
+      PGPASSWORD: ${POSTGRES_PASSWORD:-warehouse_local_only}
+      PGDATABASE: ${POSTGRES_DB:-warehouse}
+      REDIS_URL: ${REDIS_URL-redis://redis:6379/0}
+      REDIS_TTL: ${REDIS_TTL:-30s}
+      HTTP_ADDR: ":8080"
+      GIN_MODE: release
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      DB_MAX_CONNS: ${DB_MAX_CONNS:-10}
+      STARTUP_TIMEOUT: ${STARTUP_TIMEOUT:-10s}
+      REQUEST_TIMEOUT: ${REQUEST_TIMEOUT:-5s}
+      SHUTDOWN_TIMEOUT: ${SHUTDOWN_TIMEOUT:-10s}
+    ports:
+      - "127.0.0.1:${API_PORT:-18080}:8080"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "api", "healthcheck"]
+      interval: 5s
+      timeout: 4s
+      retries: 5
+      start_period: 5s
+    stop_grace_period: 15s
+    security_opt:
+      - no-new-privileges:true
+
+  frontend:
+    build:
+      context: ./frontend
+      target: runtime
+    ports:
+      - "127.0.0.1:${FRONTEND_PORT:-3002}:8080"
+    depends_on:
+      backend:
+        condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 10s
+
+volumes:
+  postgres_data:

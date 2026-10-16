@@ -1,0 +1,14 @@
+.DS_Store
+.env
+.env.*
+!.env.example
+backend/bin/
+coverage.out
+*.test
+.firecrawl/
+node_modules/
+frontend/dist/
+frontend/coverage/
+frontend/playwright-report/
+frontend/test-results/
+*.tsbuildinfo
